@@ -1,0 +1,240 @@
+name: Sync upstream and build unsigned IPA
+run-name: Unsigned IPA · ${{ github.event_name }} · ${{ github.run_number }}
+
+on:
+  schedule:
+    # UTC 00:23 / 06:23 / 12:23 / 18:23; 北京时间 08:23 / 14:23 / 20:23 / 02:23。
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "即使已有相同版本的 IPA，也重新构建"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/sync-ios-unsigned.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-ios-unsigned
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    if: github.repository == 'peacewalker/s1er' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      sha: ${{ steps.sync.outputs.sha }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+      artifact_name: ${{ steps.check.outputs.artifact_name }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream while preserving fork workflows
+        id: sync
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/Shirolin/s1er.git
+          git fetch --no-tags upstream main
+          upstream_sha=$(git rev-parse refs/remotes/upstream/main)
+
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo 'Fork already contains the latest upstream commit.'
+          else
+            merge_failed=false
+            git merge --no-ff --no-commit "$upstream_sha" || merge_failed=true
+            if ! git rev-parse --verify -q MERGE_HEAD >/dev/null; then
+              echo '::error::Upstream merge did not enter a valid merge state.'
+              exit 1
+            fi
+
+            # GITHUB_TOKEN cannot write workflow changes. Keep the fork's
+            # workflows, including this automation, exactly as they were.
+            git restore --source=HEAD --staged --worktree -- .github/workflows
+            conflicts=$(git diff --name-only --diff-filter=U)
+            if [[ -n "$conflicts" ]]; then
+              echo '::error::Upstream changes conflict with fork changes. Resolve them manually; nothing was pushed.'
+              printf '%s\n' "$conflicts"
+              git merge --abort
+              exit 1
+            fi
+            if [[ "$merge_failed" == true ]]; then
+              echo 'Workflow-only conflicts were resolved by preserving the fork workflows.'
+            fi
+            git commit -m "chore(sync): 同步 Shirolin/s1er ${upstream_sha:0:12}"
+            # Never force-push: a concurrent user change must be preserved.
+            git push origin HEAD:main
+          fi
+
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Upstream synchronization'
+            echo "- Upstream commit: \`$upstream_sha\`"
+            echo "- Build commit: \`$sha\`"
+            echo '- Fork workflows are preserved; application code is merged normally.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skip builds that already have a downloadable IPA
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ steps.sync.outputs.sha }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_build }}
+        run: |
+          set -euo pipefail
+          artifact_name="s1er-unsigned-$BUILD_SHA"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          existing_run=$(gh api --method GET "repos/$GH_REPO/actions/artifacts" \
+            -f name="$artifact_name" -f per_page=100 \
+            --jq '[.artifacts[] | select(.expired == false)] | first | .workflow_run.id // empty')
+
+          if [[ "$FORCE_BUILD" == true || -z "$existing_run" ]]; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            echo 'No reusable IPA, or a manual rebuild was requested.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'build=false' >> "$GITHUB_OUTPUT"
+            echo "IPA already available: https://github.com/$GH_REPO/actions/runs/$existing_run" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      BUILD_SHA: ${{ needs.sync.outputs.sha }}
+      UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+    steps:
+      - name: Check out the exact synchronized commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.sync.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          cache: true
+
+      - name: Show toolchain versions
+        run: |
+          flutter --version
+          xcodebuild -version
+          pod --version
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib test scripts
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test --reporter expanded
+
+      - name: Audit Material Design 3
+        run: dart run scripts/audit_m3.dart --fail-on-error
+
+      - name: Build release app without signing
+        run: flutter build ios --release --no-codesign
+
+      - name: Package and verify unsigned IPA
+        id: package
+        run: |
+          set -euo pipefail
+          app=build/ios/iphoneos/Runner.app
+          test -d "$app"
+          test -f "$app/Info.plist"
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
+          [[ "$version-$build_number" =~ ^[A-Za-z0-9.+_-]+$ ]]
+          if codesign --display "$app" >/dev/null 2>&1; then
+            echo '::error::Expected an unsigned app, but a code signature was found.'
+            exit 1
+          fi
+
+          mkdir -p build/unsigned-package/Payload dist
+          ditto "$app" build/unsigned-package/Payload/Runner.app
+          ipa="S1er-$version-$build_number-${BUILD_SHA:0:7}-unsigned.ipa"
+          ipa_path="$PWD/dist/$ipa"
+          (
+            cd build/unsigned-package
+            # Preserve framework symlinks and the required Payload directory.
+            ditto -c -k --keepParent Payload "$ipa_path"
+          )
+          export IPA_PATH="$ipa_path"
+          python3 - <<'PY'
+          import os
+          import plistlib
+          import zipfile
+
+          with zipfile.ZipFile(os.environ['IPA_PATH']) as archive:
+              broken = archive.testzip()
+              if broken:
+                  raise SystemExit(f'Corrupt IPA entry: {broken}')
+              info = plistlib.loads(archive.read('Payload/Runner.app/Info.plist'))
+              archive.getinfo('Payload/Runner.app/' + info['CFBundleExecutable'])
+              assert 'iPhoneOS' in info['CFBundleSupportedPlatforms'], 'Not an iPhone device build'
+              assert not any(name.startswith('Payload/Runner.app/_CodeSignature/') for name in archive.namelist()), 'Unexpected app signature data'
+              print('Verified IPA structure, executable, device platform, and unsigned contents.')
+          PY
+          shasum -a 256 "$ipa_path" > "dist/$ipa.sha256"
+          {
+            echo "File: $ipa"
+            echo "Fork commit: $BUILD_SHA"
+            echo "Upstream commit: $UPSTREAM_SHA"
+            echo "Version: $version ($build_number)"
+            echo 'Release build for iPhone/iPad; unsigned. Sign before installing.'
+          } > dist/BUILD-INFO.txt
+          echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA and checksum
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.sync.outputs.artifact_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+          overwrite: true
+
+      - name: Show download link
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          IPA_NAME: ${{ steps.package.outputs.ipa }}
+        run: |
+          {
+            echo '### Unsigned IPA is ready'
+            echo "- File: \`$IPA_NAME\`"
+            echo "- [Download IPA artifact]($ARTIFACT_URL)"
+            echo '- Extract the ZIP to get the IPA. Sign it before installing.'
+            echo '- Artifacts are retained for up to 90 days, subject to repository settings.'
+          } >> "$GITHUB_STEP_SUMMARY"
