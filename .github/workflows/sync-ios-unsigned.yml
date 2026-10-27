@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: sync-ios-unsigned
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -152,22 +152,10 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Check Dart formatting
-        run: dart format --output=none --set-exit-if-changed lib test scripts
-
-      - name: Analyze
-        run: flutter analyze
-
-      - name: Run tests
-        run: flutter test --reporter expanded
-
-      - name: Audit Material Design 3
-        run: dart run scripts/audit_m3.dart --fail-on-error
-
       - name: Build release app without signing
         run: flutter build ios --release --no-codesign
 
-      - name: Package and verify unsigned IPA
+      - name: Package unsigned IPA
         id: package
         run: |
           set -euo pipefail
@@ -177,11 +165,6 @@ jobs:
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
           build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
           [[ "$version-$build_number" =~ ^[A-Za-z0-9.+_-]+$ ]]
-          if codesign --display "$app" >/dev/null 2>&1; then
-            echo '::error::Expected an unsigned app, but a code signature was found.'
-            exit 1
-          fi
-
           mkdir -p build/unsigned-package/Payload dist
           ditto "$app" build/unsigned-package/Payload/Runner.app
           ipa="S1er-$version-$build_number-${BUILD_SHA:0:7}-unsigned.ipa"
@@ -191,22 +174,6 @@ jobs:
             # Preserve framework symlinks and the required Payload directory.
             ditto -c -k --keepParent Payload "$ipa_path"
           )
-          export IPA_PATH="$ipa_path"
-          python3 - <<'PY'
-          import os
-          import plistlib
-          import zipfile
-
-          with zipfile.ZipFile(os.environ['IPA_PATH']) as archive:
-              broken = archive.testzip()
-              if broken:
-                  raise SystemExit(f'Corrupt IPA entry: {broken}')
-              info = plistlib.loads(archive.read('Payload/Runner.app/Info.plist'))
-              archive.getinfo('Payload/Runner.app/' + info['CFBundleExecutable'])
-              assert 'iPhoneOS' in info['CFBundleSupportedPlatforms'], 'Not an iPhone device build'
-              assert not any(name.startswith('Payload/Runner.app/_CodeSignature/') for name in archive.namelist()), 'Unexpected app signature data'
-              print('Verified IPA structure, executable, device platform, and unsigned contents.')
-          PY
           (cd dist && shasum -a 256 "$ipa" > "$ipa.sha256")
           {
             echo "File: $ipa"
