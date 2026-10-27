@@ -202,7 +202,26 @@ void main() {
       expect(adapter.requestedPages, contains(3));
     });
 
-    test('fetches rate logs when commentcount is zero', () async {
+    test('marks rate pids but does not fetch on page load', () async {
+      adapter.commentCount = {'1': 2};
+      container = buildContainer(
+        extraOverrides: [
+          readingRecordProvider('100').overrideWithValue(null),
+        ],
+      );
+      final sub = container.listen(postProvider('100'), (_, __) {});
+      addTearDown(sub.close);
+
+      await container.read(postProvider('100').future);
+      await pumpEventQueue();
+
+      final notifier = container.read(threadRateLogsProvider('100').notifier);
+      expect(notifier.isMarked('1'), isTrue);
+      expect(adapter.rateLogRequests, isEmpty);
+      expect(adapter.pageHtmlRequests, isEmpty);
+    });
+
+    test('marks commentcount keys with zero value', () async {
       adapter.commentCount = {'1': 0};
       container = buildContainer(
         extraOverrides: [
@@ -215,10 +234,16 @@ void main() {
       await container.read(postProvider('100').future);
       await pumpEventQueue();
 
-      expect(adapter.rateLogRequests, isNotEmpty);
+      expect(
+        container.read(threadRateLogsProvider('100').notifier).isMarked('1'),
+        isTrue,
+      );
+      expect(adapter.rateLogRequests, isEmpty);
     });
 
-    test('fetches rate logs when commentcount is missing', () async {
+    test('v1 response without commentcount triggers page HTML fallback',
+        () async {
+      adapter.forceLegacyVersion = true;
       container = buildContainer(
         extraOverrides: [
           readingRecordProvider('100').overrideWithValue(null),
@@ -229,11 +254,50 @@ void main() {
 
       await container.read(postProvider('100').future);
       await pumpEventQueue();
+      await pumpEventQueue();
 
-      expect(adapter.rateLogRequests, isNotEmpty);
+      expect(
+        container.read(threadRateLogsProvider('100').notifier).isMarked('1'),
+        isFalse,
+      );
+      expect(adapter.rateLogRequests, isEmpty);
+      expect(adapter.pageHtmlRequests, hasLength(1));
     });
 
-    test('auto-fetches rate logs on page load when commentcount > 0', () async {
+    test('v4 503 downgrade falls back to page HTML for rate logs', () async {
+      adapter.commentCount = {'1': 2};
+      adapter.pageHtml = '''
+<div id="ratelog_1"><ul>
+<li><div class="flex-2"><a>参与人数 <span>1</span></a></div>
+<div class="flex-2">战斗力 <i>+2</i></div><div class="flex-3">理由</div></li>
+<li><div class="flex-2"><a href="space-uid-1.html">userA</a></div>
+<div class="flex-2">+ 2</div><div class="flex-3">good</div></li>
+</ul></div>
+''';
+      adapter.failV4With503 = true;
+      adapter.forceLegacyVersion = true;
+      container = buildContainer(
+        extraOverrides: [
+          readingRecordProvider('100').overrideWithValue(null),
+        ],
+      );
+      final sub = container.listen(postProvider('100'), (_, __) {});
+      addTearDown(sub.close);
+
+      await container.read(postProvider('100').future);
+      await pumpEventQueue();
+      await pumpEventQueue();
+
+      // 走整页 HTML 兜底，而不是补发 v4
+      expect(adapter.pageHtmlRequests, hasLength(1));
+      expect(adapter.v4RateRequests, hasLength(1)); // 只有最初失败的那次
+      expect(adapter.rateLogRequests, isEmpty);
+      final log = container.read(rateLogProvider(('100', '1')));
+      expect(log, isNotNull);
+      expect(log!.totalScore, 2);
+    });
+
+    test('normal v4 page never requests page HTML', () async {
       adapter.commentCount = {'1': 2};
       container = buildContainer(
         extraOverrides: [
@@ -246,10 +310,14 @@ void main() {
       await container.read(postProvider('100').future);
       await pumpEventQueue();
 
-      expect(adapter.rateLogRequests, isNotEmpty);
+      expect(adapter.pageHtmlRequests, isEmpty);
+      expect(
+        container.read(threadRateLogsProvider('100').notifier).isMarked('1'),
+        isTrue,
+      );
     });
 
-    test('reuses the current page rate log cache', () async {
+    test('ensureRateLog requests only the given pid', () async {
       container = buildContainer(
         extraOverrides: [
           readingRecordProvider('100').overrideWithValue(null),
@@ -259,34 +327,38 @@ void main() {
       addTearDown(sub.close);
 
       await container.read(postProvider('100').future);
-      await pumpEventQueue();
-      final requestsAfterLoad = adapter.rateLogRequests.length;
-
       await container
           .read(threadRateLogsProvider('100').notifier)
-          .ensurePageRateLogs(1);
+          .ensureRateLog('1');
 
-      expect(adapter.rateLogRequests, hasLength(requestsAfterLoad));
+      expect(adapter.rateLogRequests, hasLength(1));
+      final uri = adapter.rateLogRequests.single;
+      expect(uri.queryParameters['action'], 'viewratings');
+      expect(uri.queryParameters['pid'], '1');
+      expect(uri.queryParameters['inajax'], '1');
+      expect(uri.queryParameters['mobile'], 'no');
+      expect(adapter.pageHtmlRequests, isEmpty);
+    });
+
+    test('reuses the current pid rate log cache', () async {
+      container = buildContainer(
+        extraOverrides: [
+          readingRecordProvider('100').overrideWithValue(null),
+        ],
+      );
+      final sub = container.listen(postProvider('100'), (_, __) {});
+      addTearDown(sub.close);
+
+      await container.read(postProvider('100').future);
+      final notifier = container.read(threadRateLogsProvider('100').notifier);
+      await notifier.ensureRateLog('1');
+      await notifier.ensureRateLog('1');
+
+      expect(adapter.rateLogRequests, hasLength(1));
     });
 
     test('rate log merge does not mutate postProvider state', () async {
       adapter.commentCount = {'1': 2};
-      adapter.rateLogHtml = '''
-<div id="ratelog_1">
-  <ul class="post_box cl">
-    <li class="flex-box mli p0">
-      <div class="flex-2"><a> 参与人数 <span class="xi1">1</span></a></div>
-      <div class="flex-2">战斗力 <i><span class="xi1">+2</span></i></div>
-      <div class="flex-3">理由</div>
-    </li>
-    <li class="flex-box mli p0">
-      <div class="flex-2"><a href="home.php?mod=space&uid=1">userA</a></div>
-      <div class="flex-2 xi1"> + 2</div>
-      <div class="flex-3">good</div>
-    </li>
-  </ul>
-</div>
-''';
       container = buildContainer(
         extraOverrides: [
           readingRecordProvider('100').overrideWithValue(null),
@@ -297,14 +369,14 @@ void main() {
       addTearDown(sub.close);
 
       final initial = await container.read(postProvider('100').future);
-      await pumpEventQueue();
       final postsBefore = initial.posts;
 
-      expect(adapter.rateLogRequests, isNotEmpty);
+      await container
+          .read(threadRateLogsProvider('100').notifier)
+          .ensureRateLog('1');
 
       final after = container.read(postProvider('100')).asData!.value;
       expect(identical(after.posts, postsBefore), isTrue);
-      expect(adapter.rateLogRequests, isNotEmpty);
       expect(
         container.read(threadRateLogsProvider('100')),
         isNotEmpty,
@@ -488,9 +560,24 @@ class _ThreadDetailAdapter implements HttpClientAdapter {
   final locateRequests = <String>[];
   final locatePageForPid = <String, int>{};
   final rateLogRequests = <Uri>[];
+  final pageHtmlRequests = <Uri>[];
+  final v4RateRequests = <Uri>[];
   final failPages = <int>{};
   Map<String, int>? commentCount;
-  String rateLogHtml = '<html></html>';
+  bool failV4With503 = false;
+  bool forceLegacyVersion = false;
+  String pageHtml = '<html></html>';
+  String rateLogHtml = '''
+<table class="list">
+<thead><tr><td>积分</td><td>用户名</td><td>时间</td><td>理由</td></tr></thead>
+<tr>
+<td>战斗力 +2 鹅</td>
+<td><a href="space-uid-1.html">userA</a></td>
+<td>2026-8-12 20:27</td>
+<td>good</td>
+</tr>
+</table>
+''';
   bool omitPidFromPostlist = false;
   String? _lastLocatedPid;
 
@@ -534,6 +621,18 @@ class _ThreadDetailAdapter implements HttpClientAdapter {
         );
       }
       final pid = omitPidFromPostlist ? '1' : (_lastLocatedPid ?? '1');
+      final requestedVersion = uri.queryParameters['version'];
+      if (requestedVersion == '4') v4RateRequests.add(uri);
+      if (requestedVersion == '4' && failV4With503) {
+        throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.badResponse,
+          response: Response(requestOptions: options, statusCode: 503),
+          message: 'simulated v4 503',
+        );
+      }
+      // 响应体里的 Version：模拟「服务端降级返回 v1」
+      final version = forceLegacyVersion ? '1' : requestedVersion;
       final variables = <String, dynamic>{
         'ppp': '40',
         'thread': {
@@ -553,11 +652,13 @@ class _ThreadDetailAdapter implements HttpClientAdapter {
           },
         ],
       };
-      if (commentCount != null) {
+      // 模拟真实 v1 响应：没有 commentcount
+      if (commentCount != null && version == '4') {
         variables['commentcount'] = commentCount;
       }
       return ResponseBody.fromString(
         jsonEncode({
+          'Version': version ?? '4',
           'Variables': variables,
         }),
         200,
@@ -567,11 +668,15 @@ class _ThreadDetailAdapter implements HttpClientAdapter {
       );
     }
 
-    if (uri.query.contains('mod=viewthread')) {
+    if (uri.query.contains('action=viewratings')) {
       rateLogRequests.add(uri);
       return ResponseBody.fromString(rateLogHtml, 200);
     }
 
+    if (uri.query.contains('mod=viewthread')) {
+      pageHtmlRequests.add(uri);
+      return ResponseBody.fromString(pageHtml, 200);
+    }
     return ResponseBody.fromString('{}', 200);
   }
 }

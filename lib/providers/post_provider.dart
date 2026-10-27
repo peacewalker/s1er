@@ -8,9 +8,7 @@ import '../models/poll.dart';
 import '../models/thread_open_intent.dart';
 import '../services/api_service.dart';
 import '../services/discuz_parser.dart';
-import '../services/http_client.dart';
 import '../services/poll_vote_cache.dart';
-import '../services/rate_log_service.dart';
 import '../services/talker.dart';
 import '../utils/thread_navigation.dart';
 import 'api_service_provider.dart';
@@ -100,10 +98,6 @@ class PostListState {
     );
   }
 }
-
-final rateLogServiceProvider = Provider<RateLogService>((ref) {
-  return RateLogService(ref.watch(httpClientProvider));
-});
 
 final pollVoteCacheProvider =
     Provider.autoDispose.family<PollVoteCache, String>((ref, uid) {
@@ -221,17 +215,47 @@ class PostNotifier extends AsyncNotifier<PostListState> {
     final loaded = _buildStateFromResult(result, page, posts: posts);
     _syncSeenRepliesAfterLoad(loaded);
 
-    // 评分明细只在 HTML viewthread 的 #ratelog_*；Mobile JSON 的 postlist
-    // 不含楼层 rate（thread.rate 仅主题级标记）。会话缓存避免同页重复拉取。
-    unawaited(
-      ref
-          .read(threadRateLogsProvider(tid).notifier)
-          .ensurePageRateLogs(page)
-          .catchError((Object e, StackTrace st) {
-        talker.handle(e, st, 'ensurePageRateLogs failed tid=$tid page=$page');
-      }),
-    );
+    // postlist 不含楼层 rate；v4 的 Variables.commentcount 键即本页有评分
+    // 的 pid（v1 无此字段）。只登记标记，实际拉取由可见楼层的评分区按需
+    // 触发，避免为每页额外拉整页 HTML，也避免整页批量请求。
+    final markedPids = DiscuzParser.parseRateMarkedPids(result);
+    // v4 503 降级到 v1 时没有 commentcount，且补发 v4 同样 503（登录态
+    // 已知故障）。此时退回整页 HTML 兜底，避免该页所有评分卡消失。
+    if (markedPids.isNotEmpty) {
+      if (ref.mounted) {
+        ref.read(threadRateLogsProvider(tid).notifier).markPids(markedPids);
+      }
+    } else if (_isLegacyVersion(result)) {
+      // 不能 await：整页 HTML 走全局限速队列，会拖住读帖本身。
+      unawaited(_loadRateLogsByPageFallback(page));
+    }
     return loaded;
+  }
+
+  /// v1 降级页的评分兜底：拉一次整页 HTML 解析 `#ratelog_*`。
+  ///
+  /// 代价约 40 KB，只在正常页永不触发的异常路径使用；失败静默，
+  /// 评分属增强功能，不中断读帖。
+  Future<void> _loadRateLogsByPageFallback(int page) async {
+    try {
+      final logs = await ref.read(rateLogServiceProvider).fetchRateLogsByPage(
+            tid,
+            page: page,
+          );
+      if (!ref.mounted || logs.isEmpty) return;
+      final notifier = ref.read(threadRateLogsProvider(tid).notifier);
+      notifier.markPids(logs.keys);
+      for (final log in logs.values) {
+        notifier.primeRateLog(log.pid, log);
+      }
+    } catch (e, st) {
+      talker.handle(e, st, 'rate log page fallback failed tid=$tid page=$page');
+    }
+  }
+
+  /// 该响应是否为 v4 不可用后的 v1 降级结果。
+  static bool _isLegacyVersion(Map<String, dynamic> result) {
+    return result['Version']?.toString() == ApiService.legacyApiVersion;
   }
 
   /// 是否允许回复。
