@@ -139,6 +139,8 @@ jobs:
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
+          # Matches the Flutter revision recorded in the upstream .metadata.
+          flutter-version: '3.44.4'
           cache: true
 
       - name: Show toolchain versions
@@ -205,7 +207,7 @@ jobs:
               assert not any(name.startswith('Payload/Runner.app/_CodeSignature/') for name in archive.namelist()), 'Unexpected app signature data'
               print('Verified IPA structure, executable, device platform, and unsigned contents.')
           PY
-          shasum -a 256 "$ipa_path" > "dist/$ipa.sha256"
+          (cd dist && shasum -a 256 "$ipa" > "$ipa.sha256")
           {
             echo "File: $ipa"
             echo "Fork commit: $BUILD_SHA"

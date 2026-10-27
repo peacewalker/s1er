@@ -26,7 +26,9 @@ GitHub 可能暂停长期无活动的公开仓库定时工作流；届时在 Act
 
 ## 构建与安装
 
-macOS runner 使用 Flutter stable，执行格式检查、静态分析、测试和 M3 审计，随后执行
+macOS runner 使用 Flutter stable 3.44.4（与上游 `.metadata` 中的 revision 一致），
+避免最新版 Dart 新增检查规则导致上游代码产生额外警告；上游升级 SDK 要求时需同步调整此版本。
+执行格式检查、静态分析、测试和 M3 审计，随后执行
 `flutter build ios --release --no-codesign`，再将设备版 `Runner.app` 打包为 IPA。
 构建不需要配置 Apple ID、签名证书、描述文件或自定义 GitHub Token。
 使用仓库自动提供的 `GITHUB_TOKEN` 同步代码和检查已有产物。
