@@ -875,11 +875,24 @@ abstract final class DiscuzParser {
   }
 
   static int parseDateString(String s) {
+    final value = s.trim();
     try {
-      final dt = DateTime.parse(s.trim());
+      final dt = DateTime.parse(value);
       return dt.millisecondsSinceEpoch ~/ 1000;
     } catch (_) {
-      return 0;
+      // 论坛日期不补零（`2026-7-22`），DateTime.parse 会拒绝，回退到宽松解析。
+      final match = RegExp(
+        r'^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2}))?',
+      ).firstMatch(value.replaceAll('/', '-'));
+      if (match == null) return 0;
+      return DateTime(
+            int.parse(match.group(1)!),
+            int.parse(match.group(2)!),
+            int.parse(match.group(3)!),
+            int.tryParse(match.group(4) ?? '') ?? 0,
+            int.tryParse(match.group(5) ?? '') ?? 0,
+          ).millisecondsSinceEpoch ~/
+          1000;
     }
   }
 
@@ -1804,7 +1817,7 @@ abstract final class DiscuzParser {
     final items = <UserSpaceItem>[];
 
     if (html.contains('<div class="threadlist cl">')) {
-      // 手机版模板
+      // 手机版模板：一个 <li> 是一个主题，多条回复摘要按主题合并成一张卡。
       final blocks = html.split('<li class="list">');
       for (var i = 1; i < blocks.length; i++) {
         final block = blocks[i];
@@ -1816,47 +1829,54 @@ abstract final class DiscuzParser {
         var subject =
             titleMatch != null ? stripHtml(titleMatch.group(1) ?? '') : '';
 
-        // 优先从块内 findpost 链接取 tid（兼容 ptid&pid / pid&ptid；空 pid 为标题行）。
-        String? blockTid;
+        final entries = <UserSpaceReplyEntry>[];
+        var tid = '';
         for (final m in _spaceFindPostAnchorRe.allMatches(block)) {
           final href = _unescapeHtmlAmp(m.group(1) ?? '');
           final parsed = _parseSpaceFindPostHref(href);
           if (parsed == null) continue;
-          final (tid, pid) = parsed;
-          if (pid == null || pid.isEmpty) {
-            blockTid ??= tid;
+          final (anchorTid, pid) = parsed;
+          tid = anchorTid;
+          if (pid == null) {
             if (subject.isEmpty) {
               subject = stripHtml(m.group(2) ?? '');
             }
             continue;
           }
-          blockTid ??= tid;
-          items.add(
-            UserSpaceItem(
-              tid: tid,
-              subject: subject,
-              dateline: 0,
-              replyExcerpt: stripHtml(m.group(2) ?? ''),
+          entries.add(
+            UserSpaceReplyEntry(
               pid: pid,
-              isReply: true,
+              excerpt: stripHtml(m.group(2) ?? ''),
             ),
           );
         }
 
         // 块内无 findpost 时再尝试 viewthread tid（兼容旧结构）。
-        if (blockTid == null) {
+        if (tid.isEmpty) {
           final tidMatch = RegExp(
             r'mod=viewthread&(?:amp;)?(?:p)?tid=(\d+)',
           ).firstMatch(block);
-          blockTid = tidMatch?.group(1);
+          tid = tidMatch?.group(1) ?? '';
         }
-        if (blockTid == null) continue;
+        if (tid.isEmpty || entries.isEmpty) continue;
+        items.add(
+          UserSpaceItem(
+            tid: tid,
+            subject: subject,
+            dateline: 0,
+            replyEntries: entries,
+          ),
+        );
       }
     } else {
-      // 桌面版模板
+      // 桌面版模板：标题行切换当前主题，后续摘要挂到该主题上。
       String? currentSubject;
       String? currentForum;
       String? currentTid;
+      final order = <String>[];
+      final subjects = <String, String>{};
+      final forums = <String, String?>{};
+      final groups = <String, List<UserSpaceReplyEntry>>{};
       final forumLinkRe = RegExp(
         r'<a href="forum-\d+-\d+-\d+.html" class="xg1"[^>]*>(.*?)</a>',
         dotAll: true,
@@ -1870,7 +1890,7 @@ abstract final class DiscuzParser {
         final text = stripHtml(match.group(2) ?? '');
         if (tid.isEmpty) continue;
 
-        if (pid == null || pid.isEmpty) {
+        if (pid == null) {
           currentTid = tid;
           currentSubject = text;
           final end =
@@ -1878,19 +1898,31 @@ abstract final class DiscuzParser {
           final after = html.substring(match.end, end);
           final fm = forumLinkRe.firstMatch(after);
           currentForum = fm != null ? stripHtml(fm.group(1) ?? '') : null;
+          subjects[tid] = currentSubject;
+          forums[tid] = currentForum;
         } else {
-          items.add(
-            UserSpaceItem(
-              tid: tid,
-              subject: currentTid == tid ? (currentSubject ?? '') : '',
-              forumName: currentTid == tid ? currentForum : null,
-              dateline: 0,
-              replyExcerpt: text,
-              pid: pid,
-              isReply: true,
-            ),
-          );
+          if (!groups.containsKey(tid)) {
+            order.add(tid);
+            groups[tid] = [];
+            if (currentTid == tid) {
+              subjects[tid] = currentSubject ?? '';
+              forums[tid] = currentForum;
+            }
+          }
+          groups[tid]!.add(UserSpaceReplyEntry(pid: pid, excerpt: text));
         }
+      }
+
+      for (final tid in order) {
+        items.add(
+          UserSpaceItem(
+            tid: tid,
+            subject: subjects[tid] ?? '',
+            forumName: forums[tid],
+            dateline: 0,
+            replyEntries: groups[tid]!,
+          ),
+        );
       }
     }
 
@@ -2191,16 +2223,31 @@ abstract final class DiscuzParser {
         uidMatch?.group(1) ?? uidMatch?.group(2) ?? uidMatch?.group(3) ?? '';
     if (uid.isEmpty) return null;
 
-    // 优先取用户名链接文本（跳过头像链接内的空/img）。
-    final nameMatches = RegExp(
-      r'<a[^>]*href="[^"]*(?:space-uid-|uid=)[^"]*"[^>]*>(.*?)</a>',
+    // 用户名在 `<h4><a>shirolin</a></h4>`；头像锚点的文本是图片 URL，
+    // 直接取第一个非空链接文本会把 URL 当用户名显示。
+    final nameMatch = RegExp(
+      r'<h4[^>]*>\s*<a[^>]*>(.*?)</a>',
       caseSensitive: false,
       dotAll: true,
-    ).allMatches(block);
-    var name = '';
-    for (final match in nameMatches) {
-      final text = stripHtml(match.group(1) ?? '');
-      if (text.isNotEmpty) {
+    ).firstMatch(block);
+    var name = nameMatch != null ? stripHtml(nameMatch.group(1) ?? '') : '';
+    if (name.isEmpty) {
+      final nameMatches = RegExp(
+        r'<a[^>]*href="[^"]*(?:space-uid-|uid=)[^"]*"[^>]*>(.*?)</a>',
+        caseSensitive: false,
+        dotAll: true,
+      ).allMatches(block);
+      for (final match in nameMatches) {
+        final text = stripHtml(match.group(1) ?? '');
+        if (text.isEmpty) continue;
+        // 跳过头像链接文本（URL / 图片文件名）。
+        if (text.startsWith('http') ||
+            RegExp(
+              r'\.(?:jpe?g|png|gif|webp|svg)$',
+              caseSensitive: false,
+            ).hasMatch(text)) {
+          continue;
+        }
         name = text;
         break;
       }
