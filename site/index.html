@@ -41,19 +41,21 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="css/styles.css?v=20261106h" />
+    <link rel="stylesheet" href="css/styles.css?v=20261109a" />
     <meta property="og:title" content="S1er — Stage1st 第三方客户端" />
     <meta
       property="og:description"
       content="用 Flutter 写的 S1 客户端：版块、楼层、引用、私信，890 张麻将脸打包在本地。开源、免费、与官方无关。"
     />
-    <meta property="og:image" content="https://shirolin.github.io/s1er/assets/branding/s1er_logo_transparent.png" id="og-image" />
+    <meta property="og:image" content="https://shirolin.github.io/s1er/assets/branding/og.png" id="og-image" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
     <meta property="og:url" content="https://shirolin.github.io/s1er/" id="og-url" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="S1er — Stage1st 第三方客户端" />
     <meta name="twitter:description" content="用 Flutter 写的 S1 客户端：版块、楼层、引用、私信，890 张麻将脸打包在本地。" />
-    <meta name="twitter:image" content="https://shirolin.github.io/s1er/assets/branding/s1er_logo_transparent.png" id="twitter-image" />
+    <meta name="twitter:image" content="https://shirolin.github.io/s1er/assets/branding/og.png" id="twitter-image" />
     <script>
       (function () {
         var base = location.protocol + '//' + location.hostname;
@@ -66,8 +68,8 @@
         }
         setMeta('canonical', full);
         setMeta('og-url', full);
-        setMeta('og-image', full + 'assets/branding/s1er_logo_transparent.png');
-        setMeta('twitter-image', full + 'assets/branding/s1er_logo_transparent.png');
+        setMeta('og-image', full + 'assets/branding/og.png');
+        setMeta('twitter-image', full + 'assets/branding/og.png');
       })();
     </script>
     <script type="application/ld+json">
@@ -239,8 +241,8 @@
 
           <div class="hero__copy">
             <h1 class="hero__title" id="hero-title">
-              <span class="line"><span>整栋楼，</span></span>
-              <span class="line"><span>一层不落。</span></span>
+              <span class="line"><span>爬楼、水贴，</span></span>
+              <span class="line"><span>顺手就好。</span></span>
             </h1>
             <p class="hero__lead">
               S1er 是 Stage1st（S1）论坛的第三方客户端，用 Flutter 写成：版块、主题、楼层、引用、私信都在一个应用里，读到哪停到哪。
@@ -258,8 +260,8 @@
       <section class="section" id="floor" aria-labelledby="floor-title">
         <div class="wrap">
           <div class="floor-head">
-            <h2 id="floor-title">一层楼，三个动作</h2>
-            <p>菜单里有引用、评分和举报；点下引用，这层楼就带着出处落进回复框，不用来回复制。</p>
+            <h2 id="floor-title">一层楼，从读到回</h2>
+            <p>楼层右上角的菜单里，只看作者、分享、复制全文、评分、举报都在同一处。点「引用」，这层楼带着出处整段落进回复框。</p>
           </div>
           <div class="states">
             <div class="state">
@@ -308,7 +310,10 @@
                     </header>
                     <p class="pfloor__body">试玩里翻滚的启动帧好像多了两帧，节奏有点飘。</p>
                     <div class="pfloor__menu" id="floor-menu" data-floor-menu>
+                      <button type="button">只看作者</button>
                       <button type="button" data-floor-quote data-quote-floor="#41" data-quote-author="夜航船" data-quote-text="试玩里翻滚的启动帧好像多了两帧，节奏有点飘。">引用</button>
+                      <button type="button">分享</button>
+                      <button type="button">复制全文</button>
                       <button type="button">评分</button>
                       <button type="button">举报</button>
                     </div>
@@ -354,7 +359,7 @@
       <!-- 功能：交错的小片段 -->
       <section class="section" id="more" aria-labelledby="more-title">
         <div class="wrap">
-          <h2 id="more-title">顺手的，都做了</h2>
+          <h2 id="more-title">常用的，都备齐了</h2>
           <div class="cells">
             <article class="cell">
               <div class="cell__text">
@@ -687,6 +692,6 @@
       </div>
     </footer>
 
-    <script src="js/main.js?v=20261106h" defer></script>
+    <script src="js/main.js?v=20261109a" defer></script>
   </body>
 </html>
