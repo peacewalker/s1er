@@ -1,3 +1,4 @@
+import '../widgets/s1_ink_well.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -42,6 +43,7 @@ import '../utils/thread_navigation.dart';
 import '../theme/s1_haptics.dart';
 import '../theme/app_theme.dart';
 import '../widgets/thread_open_intent_scope.dart';
+import '../theme/s1_mouse_cursors.dart';
 
 class ForumListScreen extends ConsumerStatefulWidget {
   const ForumListScreen({
@@ -304,6 +306,11 @@ class _ForumListScreenState extends ConsumerState<ForumListScreen> {
                     ),
                   ),
                 ),
+                IconButton(
+                  tooltip: '收起帖子，返回主题列表',
+                  icon: const Icon(Icons.close),
+                  onPressed: _closeSplitDetail,
+                ),
               ]
             : [
                 FavoriteBookmarkButton(
@@ -412,6 +419,7 @@ class _ForumListScreenState extends ConsumerState<ForumListScreen> {
                                   .goToPage(page),
                               pageSearchQuery: _pageSearchQuery,
                               useSplitFab: true,
+                              showRefresh: true,
                             ),
                           ),
                         ),
@@ -589,6 +597,7 @@ class _ForumThreadList extends ConsumerWidget {
     required this.onPageChanged,
     this.pageSearchQuery = '',
     this.useSplitFab = false,
+    this.showRefresh = false,
   });
 
   final ThreadListState state;
@@ -603,6 +612,9 @@ class _ForumThreadList extends ConsumerWidget {
   final S1PageChangeCallback onPageChanged;
   final String pageSearchQuery;
   final bool useSplitFab;
+
+  /// 双栏时在左栏筛选行提供独立刷新入口，刷新列表而不影响右侧详情。
+  final bool showRefresh;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -636,6 +648,9 @@ class _ForumThreadList extends ConsumerWidget {
               ref.read(threadListProvider(fid).notifier).setQuery(query),
           onTypeSelected: (typeId) =>
               ref.read(threadListProvider(fid).notifier).selectType(typeId),
+          onRefresh: showRefresh
+              ? () => ref.read(threadListProvider(fid).notifier).refresh()
+              : null,
         ),
         Expanded(
           child: S1ContentFabOverlay(
@@ -765,6 +780,7 @@ class _ThreadFiltersSection extends ConsumerWidget {
     required this.barPadding,
     required this.onQueryChanged,
     required this.onTypeSelected,
+    this.onRefresh,
   });
 
   final ThreadListQuery query;
@@ -776,6 +792,7 @@ class _ThreadFiltersSection extends ConsumerWidget {
   final EdgeInsets barPadding;
   final ValueChanged<ThreadListQuery> onQueryChanged;
   final ValueChanged<String?> onTypeSelected;
+  final VoidCallback? onRefresh;
 
   void _toggleExpanded(WidgetRef ref, bool expanded) {
     S1Haptics.selection();
@@ -809,6 +826,7 @@ class _ThreadFiltersSection extends ConsumerWidget {
         Tooltip(
           message: tooltip,
           child: ActionChip(
+            mouseCursor: S1MouseCursors.clickable,
             avatar: Icon(icon, size: 16),
             label: Text(label),
             onPressed: onPressed,
@@ -887,7 +905,7 @@ class _ThreadFiltersSection extends ConsumerWidget {
           hint: semanticsHint,
           child: Material(
             color: Colors.transparent,
-            child: InkWell(
+            child: S1InkWell(
               onTap: enabled ? () => _toggleExpanded(ref, expanded) : null,
               child: ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: 44),
@@ -930,6 +948,20 @@ class _ThreadFiltersSection extends ConsumerWidget {
                             height: 32,
                           ),
                           onPressed: enabled ? _resetFilters : null,
+                        ),
+                      if (onRefresh != null)
+                        IconButton(
+                          tooltip: '刷新主题列表',
+                          icon: const Icon(Icons.refresh),
+                          color: scheme.onSurfaceVariant,
+                          visualDensity: VisualDensity.compact,
+                          iconSize: 20,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 32,
+                            height: 32,
+                          ),
+                          onPressed: enabled ? onRefresh : null,
                         ),
                       Icon(
                         expanded ? Icons.expand_less : Icons.expand_more,
@@ -1027,6 +1059,7 @@ class _ThreadSortFilterBar extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: FilterChip(
+                mouseCursor: S1MouseCursors.clickable,
                 label: Text(preset.label),
                 selected: query.preset == preset && preset.isPrimaryChip,
                 showCheckmark: false,
@@ -1054,6 +1087,7 @@ class _ThreadSortFilterBar extends StatelessWidget {
                   label: '更多筛选，当前：$_moreLabel',
                   hint: '双击打开排序和时间菜单',
                   child: FilterChip(
+                    mouseCursor: S1MouseCursors.clickable,
                     label: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1162,6 +1196,7 @@ class _ThreadTypeFilterBar extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: FilterChip(
+              mouseCursor: S1MouseCursors.clickable,
               label: const Text('全部'),
               selected: selectedTypeId == null,
               showCheckmark: false,
@@ -1177,6 +1212,7 @@ class _ThreadTypeFilterBar extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
               child: FilterChip(
+                mouseCursor: S1MouseCursors.clickable,
                 label: Text(entry.value),
                 selected: selectedTypeId == entry.key,
                 showCheckmark: false,
